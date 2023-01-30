@@ -7,14 +7,14 @@ import (
 )
 
 type Capability struct {
-	Name          string
-	Version       string
-	TotalMessages uint
-	HandleMessage func(msgID uint, item rlp.Item) error
+	Name          string                                // Name of the protocol, eg "eth"
+	Version       string                                // Version of the protocol, eg "67"
+	HighestMsgID  uint                                  // The highest message ID for the protocol. Since RLPX messages are multiplexed in a compact manner, this determines the "message space" for this capability
+	HandleMessage func(msgID uint, item rlp.Item) error // A handler for an incoming message ID and RLP item
 }
 
 func (c Capability) CanonicalName() string {
-	fmt.Sprintf("%s/%s", c.Name, c.Version)
+	return fmt.Sprintf("%s/%s", c.Name, c.Version)
 }
 
 type Capabilities []Capability
@@ -31,19 +31,4 @@ func (c Capabilities) Swap(i, j int) {
 	t := c[i]
 	c[j] = c[i]
 	c[j] = t
-}
-
-// ForMsgID takes in the multiplexed msgID and returns the capability and capability msgID
-// that matches.
-// From the docs:
-// Message IDs are assumed to be compact from ID 0x10 onwards (0x00-0x0f is reserved for the "p2p" capability) and given to each shared (equal-version, equal-name) capability in alphabetic order.
-func (c Capabilities) ForMsgID(msgID uint) (*Capability, uint) {
-	var idx uint = 0
-	for _, cap := range c {
-		if (idx + cap.TotalMessages) >= msgID {
-			return &cap, msgID - idx
-		}
-		idx += cap.TotalMessages
-	}
-	return nil, msgID
 }

@@ -288,7 +288,7 @@ func (s *session) HandleMessage(d []byte) error {
 	case mid == 0x01:
 		return s.HandleDisconnect(item)
 	case mid >= 0x10:
-		cap, demultiplexedID := s.sharedCaps.ForMsgID(uint(mid))
+		cap, demultiplexedID := s.demultiplexMsg(uint(mid))
 		if cap == nil {
 			return isxerrors.Errorf("no shared capability supports message id: %d. Known shared capabilities: %v", mid, s.sharedCaps)
 		}
@@ -296,12 +296,11 @@ func (s *session) HandleMessage(d []byte) error {
 	default:
 		return isxerrors.Errorf("unsupported p2p message id: %d", mid)
 	}
-	return nil
 }
 
 func (s *session) HandleHello(item rlp.Item) error {
 	if len(item.List()) < 5 {
-		return errors.New(fmt.Sprintf("HandleHello: expected rlp list of at least 5, got %d", len(item.List())))
+		return isxerrors.Errorf("HandleHello: expected rlp list of at least 5, got %d", len(item.List()))
 	}
 	var (
 		id         = item.At(1).String()
@@ -340,6 +339,21 @@ func (s *session) HandleHello(item rlp.Item) error {
 func (s *session) HandleDisconnect(item rlp.Item) error {
 	s.log("<disconnect reason=%d\n", item.Uint16())
 	return nil
+}
+
+// demultiplexMsg takes in the multiplexed msgID and returns the matching capability and capability msgID
+// that matches.
+// From the docs:
+// Message IDs are assumed to be compact from ID 0x10 onwards (0x00-0x0f is reserved for the "p2p" capability) and given to each shared (equal-version, equal-name) capability in alphabetic order.
+func (s *session) demultiplexMsg(msgID uint) (*Capability, uint) {
+	var idx uint = 0
+	for _, cap := range s.sharedCaps {
+		if (idx + cap.HighestMsgID) >= msgID {
+			return &cap, msgID - idx
+		}
+		idx += cap.HighestMsgID
+	}
+	return nil, msgID
 }
 
 type handshake struct {

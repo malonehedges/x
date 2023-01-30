@@ -10,6 +10,7 @@ import (
 var Eth67 = rlpx.Capability{
 	Name:          "eth",
 	Version:       "67",
+	HighestMsgID:  0x10,
 	HandleMessage: handleEthMessage,
 }
 
