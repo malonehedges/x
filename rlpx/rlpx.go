@@ -13,6 +13,7 @@ import (
 	"hash"
 	mrand "math/rand"
 	"net"
+	"sort"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/golang/snappy"
@@ -30,9 +31,11 @@ import (
 type session struct {
 	Verbose bool
 
-	conn   net.Conn
-	local  *enr.Record
-	ig, eg *mstate
+	conn       net.Conn
+	local      *enr.Record
+	ig, eg     *mstate
+	ownCaps    Capabilities
+	sharedCaps Capabilities
 }
 
 func (s *session) log(format string, args ...any) {
@@ -41,12 +44,12 @@ func (s *session) log(format string, args ...any) {
 	}
 }
 
-func Session(l *enr.Record, hs *handshake) (*session, error) {
+func Session(l *enr.Record, hs *handshake, caps Capabilities) (*session, error) {
 	err := hs.complete()
 	if err != nil {
 		return nil, isxerrors.Errorf("handshake incomplete: %w", err)
 	}
-	s := &session{local: l}
+	s := &session{local: l, ownCaps: caps}
 
 	//static-shared-secret = ecdh.agree(privkey, remote-pubk)
 	//ephemeral-key = ecdh.agree(ephemeral-privkey, remote-ephemeral-pubk)
@@ -265,7 +268,8 @@ func (s *session) HandleMessage(d []byte) error {
 	if err != nil {
 		return isxerrors.Errorf("decoding frame msg id: %w", err)
 	}
-	if msgID.Uint64() == 0x00 {
+	mid := msgID.Uint64()
+	if mid == 0x00 {
 		item, err := rlp.Decode(frame[1:])
 		if err != nil {
 			return isxerrors.Errorf("decoding hello msg: %w", err)
@@ -280,11 +284,17 @@ func (s *session) HandleMessage(d []byte) error {
 	if err != nil {
 		return isxerrors.Errorf("rlp decoding uncompressed frame: %w", err)
 	}
-	switch msgID.Uint64() {
-	case 0x01:
+	switch {
+	case mid == 0x01:
 		return s.HandleDisconnect(item)
-	case 0x10:
-		return s.HandleEthStatus(item)
+	case mid >= 0x10:
+		cap, demultiplexedID := s.sharedCaps.ForMsgID(uint(mid))
+		if cap == nil {
+			return isxerrors.Errorf("no shared capability supports message id: %d. Known shared capabilities: %v", mid, s.sharedCaps)
+		}
+		return cap.HandleMessage(demultiplexedID, item)
+	default:
+		return isxerrors.Errorf("unsupported p2p message id: %d", mid)
 	}
 	return nil
 }
@@ -294,23 +304,41 @@ func (s *session) HandleHello(item rlp.Item) error {
 		return errors.New(fmt.Sprintf("HandleHello: expected rlp list of at least 5, got %d", len(item.List())))
 	}
 	var (
-		id   = item.At(1).String()
-		caps [][]string
+		id         = item.At(1).String()
+		remoteCaps [][2]string
 	)
 	for _, c := range item.At(2).List() {
-		caps = append(caps, []string{c.At(0).String(), c.At(1).String()})
+		remoteCaps = append(remoteCaps, [2]string{c.At(0).String(), c.At(1).String()})
 	}
-	s.log("<hello id=%s caps=%v\n", id, caps)
+	s.log("<hello id=%s caps=%v\n", id, remoteCaps)
+	// Determine shared capabilities
+	var shared Capabilities
+	for _, own := range s.ownCaps {
+		for _, remote := range remoteCaps {
+			if remote[0] == own.Name && remote[1] == own.Version {
+				shared = append(shared, own)
+				break
+			}
+		}
+	}
+	// Eliminate duplicates by choosing the highest version of each shared protocol
+	sort.Sort(shared) // sorted in alphabetical order
+	if len(shared) > 0 {
+		cur := shared[0]
+		for i := 0; i < len(shared)-1; i++ {
+			next := shared[i+1]
+			if cur.Name != next.Name {
+				s.sharedCaps = append(s.sharedCaps, cur)
+			}
+			cur = next
+		}
+		s.sharedCaps = append(s.sharedCaps, cur)
+	}
 	return nil
 }
 
 func (s *session) HandleDisconnect(item rlp.Item) error {
 	s.log("<disconnect reason=%d\n", item.Uint16())
-	return nil
-}
-
-func (s *session) HandleEthStatus(item rlp.Item) error {
-	s.log("<status version=%d network=%d difficulty=%d\n", item.At(0).Uint16(), item.At(1).Uint16(), item.At(2).Uint64())
 	return nil
 }
 
